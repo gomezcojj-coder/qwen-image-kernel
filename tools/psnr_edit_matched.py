@@ -4,7 +4,10 @@ import sys, time
 
 import torch
 
-sys.path.insert(0, r"C:\Users\gomez\Desktop\Coding_Projects\Qwen_Image")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import os as _os
+_os.chdir(Path(__file__).resolve().parent.parent)
 
 PROMPT = "Repaint the teapot with a glossy cobalt blue glaze, keep everything else identical"
 REF = "bench_out/kernel.png"

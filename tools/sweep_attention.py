@@ -4,7 +4,10 @@ import sys, time
 import torch
 import triton
 
-sys.path.insert(0, r"C:\Users\gomez\Desktop\Coding_Projects\Qwen_Image")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import os as _os
+_os.chdir(Path(__file__).resolve().parent.parent)
 from qwen_image_kernel.triton_attention import _qwen21_attn_fwd, block_causal_flash_attention
 
 DEV = "cuda"
