@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen-Image-2.1 · Kernel Runtime</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #12151d; --panel2: #171b25; --line: #232936;
+    --text: #e8eaf0; --dim: #8a93a6; --acc: #6c8cff; --acc2: #8a5cff;
+    --ok: #3ddc97; --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex;
+         flex-direction: column; }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: .3px; }
+  .sub { color: var(--dim); font-size: 11px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  .badge { font-size: 10px; padding: 3px 8px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.ready { color: var(--ok); border-color: var(--ok); }
+  .badge.load  { color: #ffd166; border-color: #ffd166; }
+  .badge.err   { color: var(--err); border-color: var(--err); }
+  #vram { margin-left: auto; color: var(--dim); font-size: 11px; }
+  main { display: flex; flex: 1; min-height: 0; }
+  #left { width: 400px; min-width: 340px; border-right: 1px solid var(--line);
+          background: var(--panel); padding: 16px; overflow-y: auto; }
+  #right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  label { display: block; font-size: 11px; color: var(--dim); margin: 14px 0 6px;
+          text-transform: uppercase; letter-spacing: .8px; }
+  textarea, input[type=text], input[type=number], select {
+    width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 11px; font: inherit; outline: none; }
+  textarea { min-height: 90px; resize: vertical; }
+  textarea:focus, input:focus, select:focus { border-color: var(--acc); }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 4px; }
+  .tab { flex: 1; text-align: center; padding: 8px; border-radius: 8px; cursor: pointer;
+         background: var(--panel2); border: 1px solid var(--line); color: var(--dim); font-size: 12px; }
+  .tab.on { background: linear-gradient(135deg, var(--acc), var(--acc2)); color: #fff; border: 0; }
+  #drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 18px;
+          text-align: center; color: var(--dim); font-size: 12px; cursor: pointer;
+          transition: border-color .15s; margin-top: 6px; }
+  #drop.over { border-color: var(--acc); color: var(--acc); }
+  #thumbs { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  #thumbs .th { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden;
+                border: 1px solid var(--line); }
+  #thumbs img { width: 100%; height: 100%; object-fit: cover; }
+  #thumbs .x { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%;
+               background: rgba(0,0,0,.65); color: #fff; font-size: 10px; line-height: 16px;
+               text-align: center; cursor: pointer; }
+  button#go { width: 100%; margin-top: 16px; padding: 12px; border: 0; border-radius: 10px;
+              background: linear-gradient(135deg, var(--acc), var(--acc2)); color: #fff;
+              font-size: 14px; font-weight: 600; cursor: pointer; }
+  button#go:disabled { opacity: .45; cursor: default; }
+  #prog { margin-top: 12px; display: none; }
+  #bar { height: 6px; background: var(--panel2); border-radius: 6px; overflow: hidden; }
+  #fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--acc), var(--acc2)); transition: width .3s; }
+  #stat { font-size: 11px; color: var(--dim); margin-top: 6px; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center;
+           background: radial-gradient(1200px 700px at 60% 30%, #10131b 0%, var(--bg) 60%); min-height: 0; padding: 18px; }
+  #result { max-width: 100%; max-height: 100%; border-radius: 12px; box-shadow: 0 12px 60px rgba(0,0,0,.6); }
+  #empty { color: #3a4358; font-size: 13px; text-align: center; }
+  #gallery { display: flex; gap: 8px; padding: 10px 18px; overflow-x: auto;
+             border-top: 1px solid var(--line); background: var(--panel); min-height: 92px; }
+  #gallery img { height: 68px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); }
+  #gallery img:hover { border-color: var(--acc); }
+  .errbox { background: rgba(255,107,107,.08); border: 1px solid var(--err); color: var(--err);
+            padding: 10px 12px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Qwen-Image-2.1</h1>
+  <span class="sub">kernel runtime · FP8 · Triton block-causal attention</span>
+  <span id="vram" class="sub"></span>
+  <span id="ready" class="badge load">loading model…</span>
+</header>
+<main>
+  <div id="left">
+    <div class="tabs">
+      <div class="tab on" id="tabT2I" onclick="setMode('t2i')">Text → Image</div>
+      <div class="tab" id="tabEdit" onclick="setMode('edit')">Edit (references)</div>
+    </div>
+    <label id="refLabel" style="display:none">Reference images · up to 4 · RGBA ok</label>
+    <div id="drop" style="display:none">drop images here or click to browse</div>
+    <input type="file" id="file" accept="image/*" multiple style="display:none">
+    <div id="thumbs"></div>
+
+    <label>Prompt</label>
+    <textarea id="prompt" placeholder="A ceramic teapot on a wooden table, morning light, photorealistic"></textarea>
+
+    <label>Negative prompt · optional (enables CFG)</label>
+    <textarea id="negative" style="min-height:44px" placeholder="blurry, low quality"></textarea>
+
+    <label>Settings</label>
+    <div class="row">
+      <select id="size">
+        <option value="512">512 px</option>
+        <option value="768">768 px</option>
+        <option value="1024" selected>1024 px</option>
+      </select>
+      <input type="number" id="steps" value="40" min="4" max="60" title="steps">
+      <input type="number" id="seed" placeholder="seed" title="seed (-1 = random)">
+    </div>
+
+    <button id="go" disabled>Generate</button>
+    <div id="prog">
+      <div id="bar"><div id="fill"></div></div>
+      <div id="stat"></div>
+    </div>
+    <div id="errbox" class="errbox" style="display:none"></div>
+  </div>
+
+  <div id="right">
+    <div id="stage"><div id="empty">results appear here</div><img id="result" style="display:none"></div>
+    <div id="gallery"></div>
+  </div>
+</main>
+
+<script>
+// explicit element refs - "prompt" would collide with the built-in window.prompt
+const $ = id => document.getElementById(id);
+const elPrompt = $('prompt'), elNeg = $('negative'), elSteps = $('steps'),
+      elSize = $('size'), elSeed = $('seed'), elGo = $('go'),
+      elDrop = $('drop'), elFile = $('file'), elThumbs = $('thumbs'),
+      elProg = $('prog'), elFill = $('fill'), elStat = $('stat'),
+      elErr = $('errbox'), elResult = $('result'), elEmpty = $('empty'),
+      elGallery = $('gallery'), elReady = $('ready'), elVram = $('vram'),
+      elTabT2I = $('tabT2I'), elTabEdit = $('tabEdit'), elRefLabel = $('refLabel');
+
+let mode = 't2i', files = [], jobId = null, poll = null;
+
+function setMode(m) {
+  mode = m;
+  $('tabT2I').classList.toggle('on', m === 't2i');
+  $('tabEdit').classList.toggle('on', m === 'edit');
+  elDrop.style.display = m === 'edit' ? 'block' : 'none';
+  elRefLabel.style.display = m === 'edit' ? 'block' : 'none';
+  if (m !== 'edit') { files = []; renderThumbs(); }
+}
+elDrop.onclick = () => elFile.click();
+elFile.onchange = () => addFiles(elFile.files);
+['dragover','dragenter'].forEach(ev => elDrop.addEventListener(ev, e => { e.preventDefault(); elDrop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => elDrop.addEventListener(ev, e => { e.preventDefault(); elDrop.classList.remove('over'); }));
+elDrop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+function addFiles(list) {
+  for (const f of list) if (f.type.startsWith('image/') && files.length < 4) files.push(f);
+  renderThumbs();
+}
+function renderThumbs() {
+  elThumbs.innerHTML = '';
+  files.forEach((f, i) => {
+    const d = document.createElement('div'); d.className = 'th';
+    const im = document.createElement('img'); im.src = URL.createObjectURL(f);
+    const x = document.createElement('div'); x.className = 'x'; x.textContent = '×';
+    x.onclick = () => { files.splice(i, 1); renderThumbs(); };
+    d.append(im, x); elThumbs.append(d);
+  });
+  elDrop.style.opacity = files.length >= 4 ? .5 : 1;
+}
+
+elGo.onclick = async () => {
+  try {
+    if (elGo.disabled) return;
+    const p = elPrompt.value.trim();
+    if (!p) { showErr('type a prompt first'); return; }
+    const fd = new FormData();
+    fd.append('prompt', p);
+    fd.append('negative', elNeg.value);
+    fd.append('steps', +elSteps.value || 40);
+    fd.append('size', +elSize.value || 1024);
+    fd.append('seed', +elSeed.value || -1);
+    if (mode === 'edit') files.forEach(f => fd.append('images', f));
+    elGo.disabled = true; elErr.style.display = 'none';
+    const r = await fetch('/api/generate', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (j.error) { showErr(j.error); elGo.disabled = false; return; }
+    jobId = j.job_id;
+    elProg.style.display = 'block'; elFill.style.width = '2%';
+    elStat.textContent = 'queued…';
+    poll = setInterval(pollJob, 700);
+  } catch (e) { showErr('client error: ' + e); elGo.disabled = false; }
+};
+
+async function pollJob() {
+  if (!jobId) return;
+  try {
+    const j = await (await fetch('/api/job/' + jobId)).json();
+    if (j.state === 'running') {
+      const n = j.steps || 40, s = j.step || 0;
+      if (j.phase === 'denoising') {
+        elFill.style.width = Math.round(5 + 95 * s / n) + '%';
+        elStat.textContent = `denoising step ${s}/${n}`;
+      } else elStat.textContent = j.phase + '…';
+    } else if (j.state === 'done') {
+      clearInterval(poll);
+      elResult.src = j.image; elResult.style.display = 'block'; elEmpty.style.display = 'none';
+      elFill.style.width = '100%';
+      elStat.textContent = `done in ${j.elapsed_s}s · seed ${j.seed}`;
+      addGallery(j.image);
+      elGo.disabled = false;
+    } else if (j.state === 'error') {
+      clearInterval(poll); showErr(j.error || 'generation failed'); elGo.disabled = false;
+    }
+  } catch (e) { /* transient network hiccup */ }
+}
+
+function showErr(e) { elErr.style.display = 'block'; elErr.textContent = e; elProg.style.display = 'none'; }
+function addGallery(src) {
+  const im = document.createElement('img'); im.src = src;
+  im.onclick = () => { elResult.src = src; elResult.style.display = 'block'; elEmpty.style.display = 'none'; };
+  elGallery.prepend(im);
+}
+
+async function refreshHealth() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    elVram.textContent = `VRAM ${h.vram_allocated_gib} GiB used · ${h.vram_free_gib} GiB free · queue ${h.queue}`;
+    if (h.ready) { elReady.textContent = 'ready'; elReady.className = 'badge ready'; elGo.disabled = false; }
+    else if (h.load_error) { elReady.textContent = 'load error'; elReady.className = 'badge err'; showErr(h.load_error); }
+  } catch (e) {}
+}
+refreshHealth(); setInterval(refreshHealth, 2000);
+</script>
+</body>
+</html>

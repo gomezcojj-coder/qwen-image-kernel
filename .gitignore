@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Model caches & quantized weights (rebuild with the one-time script)
+fp8_cache/
+
+# Benchmark artifacts (keep results JSON/MD, ignore logs and large images)
+bench_out/
+webui_output/
+site_working.png
+site_final.png
+site_shot.png
+*.log
+
+# Reference dumps
+ref/
