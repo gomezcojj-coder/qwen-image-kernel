@@ -24,6 +24,31 @@ Timed runs average over 5 prompts (kernel) / 2 prompts (stock); each timed run i
 
 ## Accuracy (kernel FP8 vs stock BF16, identical seeds/settings)
 
+### Matched-pair gallery
+
+Labeled side-by-side cards (full frame + zoom crops) live in `docs/img/`:
+
+| pair | PSNR | SSIM | card |
+|---|---|---|---|
+| edit recolor @768 | 36.51 dB | 0.9708 | `docs/img/pair_edit.png` |
+| teapot @512 | 28.15 dB | 0.9532 | `docs/img/pair_teapot512.png` |
+| valley @1024 | 27.49 dB | 0.9304 | — |
+| anime girl @1024 | 25.04 dB | 0.9012 | `docs/img/pair_anime.png` (+ diff heatmap) |
+| workshop @1024 | 22.40 dB | 0.9048 | `docs/img/pair_workshop.png` |
+| text sign @1024 | 21.07 dB | 0.8403 | `docs/img/pair_textsign.png` |
+| portrait @1024 | 21.07 dB | 0.7803 | `docs/img/pair_portrait.png` |
+
+**How to read this:** kernel-vs-stock runs are *not* seed-matched reproductions of
+each other — FP8 rounding noise through 40 chaotic denoising steps produces
+different fine detail, and occasionally (see the portrait pair: the sampled face
+identity diverges) a semantically meaningful attribute flips. Composition, style,
+layout and prompt adherence are preserved in every pair; the divergence shows up
+in fine texture, small signage glyphs, and rarely in subject identity. If you need
+outputs bit-matched to the BF16 pipeline, run with `--no-fp8`. This is the same
+phenomenon the vLLM-Omni recipe measures (26.1 dB for all-layers FP8 on GB200) —
+our per-prompt range is 21-37 dB with edits highest (the reference conditioning
+anchors the output).
+
 | task | PSNR |
 |---|---|
 | t2i 512px, prompt 0 | 28.15 dB |
