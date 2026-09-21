@@ -1,4 +1,4 @@
-# How this runtime compares to other Qwen-Image-2.1 optimization efforts
+﻿# How this runtime compares to other Qwen-Image-2.1 optimization efforts
 
 As of 2026-09-21, five days after Qwen-Image-2.1 shipped. Sources are linked; where a
 number is vendor- or community-reported we say so.
@@ -24,27 +24,25 @@ Key sources: [ai.rs survey](https://ai.rs/ai-for-business/qwen-image-2-1-open-we
 
 ## What nobody else does for the RTX 5070 / 12 GB class
 
-The ai.rs survey's practical expectation table says 12 GB is "possible only with
-aggressive quantization/offload; expect compromises" — and every published path
-agrees: SGLang stops at the 24 GB 4090 (with offload), ComfyUI's 12 GB guidance for
+The ai.rs survey's practical expectation table says 12 GB is "possible only with aggressive quantization/offload; expect compromises", and every published path agrees: SGLang stops at the 24 GB 4090 (with offload), ComfyUI's 12 GB guidance for
 Qwen-Image 1.x was a **Q3 GGUF quant** (the loader's own docs say Q4-and-below "show
 visible degradation" on large DiTs), and vLLM-Omni requires datacenter cards. The
 community has published **no 12 GB timing for Qwen-Image-2.1 at all**.
 
 This runtime fills that slot specifically:
 
-* **7.6 GiB peak at 1024px** — the lowest published footprint for this model on any
+* **7.6 GiB peak at 1024px**, the lowest published footprint for this model on any
   hardware, achieved with FP8 W8A8 weights rather than low-bit GGUF. On a 12 GB card
   that leaves real headroom for a desktop, 1024² references, and RGBA editing.
 * **FP8 accuracy, not GGUF accuracy**: FP8 E4M3 with per-tensor dynamic activation
-  scales measures 29.8 dB (t2i) / 36.5 dB (edit) against the BF16 pipeline — the GGUF
+  scales measures 29.8 dB (t2i) / 36.5 dB (edit) against the BF16 pipeline. The GGUF
   12 GB path (Q3/Q4 of a 7B DiT) has no published accuracy number and the ComfyUI
   loader docs themselves warn of visible degradation at Q4 and below.
-* **Exact block-causal attention without torch.compile** — the stock fast path needs
+* **Exact block-causal attention without torch.compile**: the stock fast path needs
   `flex_attention` + compile; on Windows that stack is painful, and the stock
   fallback is a multi-pass SDPA decomposition. Our kernel reproduces the mask exactly
   via per-row prefix intervals and is unit-tested against the stock implementation.
-* **Contiguous prefix-KV slab + FP8 cache-V** — the 1024²-reference edit went from
+* **Contiguous prefix-KV slab + FP8 cache-V**: the 1024px-reference edit went from
   453 s (our own pre-fix number, slower than stock) to 83.6 s; cache-V FP8 costs
   nothing measurable (36.5 dB with fp8-V vs 39.3 dB bf16-cache at 768, both within
   run-to-run diffusion noise).
@@ -52,12 +50,12 @@ This runtime fills that slot specifically:
 ## Honest speed comparison to LightX2V (RTX 5090)
 
 LightX2V reports 5.93 s for the same 1024px/40-step generation on a 5090 with FP8 DiT.
-Per-step that is ~0.15 s vs our ~1.0 s — a ~6.7x gap. Context for that gap:
+Per-step that is ~0.15 s vs our ~1.0 s, a ~6.7x gap. Context:
 
 * The 5090 has ~1.75x the FP8 tensor throughput, 2.4x the memory bandwidth, 2.7x the
   VRAM, and PCIe 5 of the 5070.
 * LightX2V's stack additionally uses **SageAttention** (INT8/FP8 attention) and
-  quantized linear kernels — we deliberately skipped quantized attention to hold the
+  quantized linear kernels; we deliberately skipped quantized attention to hold the
   accuracy line (our exact-attention claim is a correctness feature, not just a perf
   feature).
 * Their number is a vendor-published median of three runs; the ai.rs survey notes no
@@ -82,11 +80,11 @@ On a same-dollar basis the comparison is not close in our favor, but on the
 * **LightX2V on 24-32 GB cards is far faster** (0.15 s/step on a 5090). If you have a
   5090 and Linux, use it; their SageAttention 3 + FP8/FP4 stack is the consumer speed
   king. (Also note their reported numbers are the only consumer numbers that exist.)
-* **vLLM-Omni is the right tool for serving** — batching, CUDA graphs, parallelism.
+* **vLLM-Omni is the right tool for serving**: batching, CUDA graphs, parallelism.
   Nothing here competes with a request-level server on an 80 GB A100.
 * **ComfyUI + Comfy-Org INT8** is the most polished UX for 24 GB cards and now has an
-  NVFP4 package for Blackwell — at 6.7 s on a 5090 (community numbers).
-* **GGUF quants** reach smaller cards (Q4 at 6-8 GB) — at lower quality. For 12 GB
+  NVFP4 package for Blackwell (6.7 s on a 5090, community numbers) (community numbers).
+* **GGUF quants** reach smaller cards (Q4 at 6-8 GB), at lower quality. For 12 GB
   cards running Qwen-Image-2.1, the choice is Q4-class GGUF (quality cost, no
   published accuracy) vs this runtime's FP8 (29.8 dB measured, 7.6 GiB peak).
 
