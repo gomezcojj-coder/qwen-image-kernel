@@ -64,6 +64,23 @@ Per-step that is ~0.15 s vs our ~1.0 s, a ~6.7x gap. Context:
 * Their number is a vendor-published median of three runs; the ai.rs survey notes no
   independent verification exists.
 
+## The niche got crowded: Unsloth GGUFs (Sep 22)
+
+Unsloth shipped Dynamic GGUFs plus a ComfyUI guide for 2.1 on 12 GB one day after
+this repo went up. That validates the niche and changes the positioning honestly:
+
+* What is no longer unique: "12 GB VRAM" as a bare claim. Their 12 GiB tier is a
+  Dynamic GGUF (important layers upcast, the rest 4-bit-class); a Dynamic FP8
+  variant runs from 6 GiB via offloading.
+* What remains different here: FP8 E4M3 weights resident on the card with
+  measured accuracy (29.8 dB t2i / 36.5 dB edit), an exact attention kernel with
+  bit-exact determinism, the fastest published 12 GB timing at 40 steps (43.8 s),
+  a measured edit path with reference images, and Windows-native Triton with no
+  torch.compile. No GGUF timings for 2.1 were published, so head-to-head speed on
+  12 GB is unmeasured on their side.
+* Complementary, not either/or: ComfyUI + GGUF is the interactive/tinkerer path;
+  this runtime is the scripted/programmatic FP8-accuracy path.
+
 On a same-dollar basis the comparison is not close in our favor, but on the
 "runs at all, on Windows, at FP8 accuracy, in 7.6 GiB" axis we are alone.
 
