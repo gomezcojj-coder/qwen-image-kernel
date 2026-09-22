@@ -1,6 +1,6 @@
-﻿# How this runtime compares to other Qwen-Image-2.1 optimization efforts
+# How this runtime compares to other Qwen-Image-2.1 optimization efforts
 
-As of 2026-09-21, five days after Qwen-Image-2.1 shipped. Sources are linked; where a
+As of 2026-09-22, five days after Qwen-Image-2.1 shipped. Sources are linked; where a
 number is vendor- or community-reported we say so.
 
 ## The landscape
@@ -9,6 +9,7 @@ number is vendor- or community-reported we say so.
 |---|---|---|---|---|---|
 | **this project** | RTX 5070 12 GB, Windows | t2i + edits | **43.8 s** t2i / **35.3 s** edit-768 | **7.6 GiB peak** | 29.8 dB / 36.5 dB vs BF16, bit-exact determinism |
 | LightX2V | RTX 5090 32 GB (consumer) | FP8 DiT + TE offload | **5.93 s** t2i / 7.14 s edit | ~16 GiB | SageAttention 2/3 + INT8/FP8 weight quants; only published consumer timing |
+| **Unsloth GGUF** | 12 GB+ consumer | t2i + edits (guide) | none published | 12 GiB tier (Dynamic GGUF); FP8 on 6 GiB via offload | Dynamic GGUFs (important layers upcast); ComfyUI workflow; entered Sep 22 |
 | ComfyUI + Comfy-Org INT8 | 24-32 GB | INT8 repackage (16.1 GiB total) | ~6.7 s (NVFP4, 5090, community) | 16.1 GiB | NVFP4 package at 10.4 GiB "reaches 16 GB cards" |
 | ComfyUI + GGUF | 6-12 GB | Q3-Q8 GGUF quants | no published 2.1 timing | 4-8 GiB | Q4_K_M recommended for 6-8 GB cards; low-bit quants visibly degrade on big models |
 | SGLang | consumer cookbook, no timings | TE offload, DiT resident | none published | ~15.6 GiB (offload) | "5090 and 4090 exceed single-GPU capacity" |
@@ -20,7 +21,9 @@ Key sources: [ai.rs survey](https://ai.rs/ai-for-business/qwen-image-2-1-open-we
 [vLLM-Omni recipe](https://recipes.vllm.ai/Qwen/Qwen-Image-2.1),
 [LightX2V Qwen-Image examples](https://github.com/ModelTC/LightX2V/tree/main/examples/qwen_image),
 [Comfy-Org INT8/NVFP4 packages](https://huggingface.co/BennyDaBall/Qwen-Image-2.1-NVFP4),
-[ComfyUI Wiki GGUF guide](https://comfyui-wiki.com/en/tutorial/advanced/image/qwen/qwen-image).
+[ComfyUI Wiki GGUF guide](https://comfyui-wiki.com/en/tutorial/advanced/image/qwen/qwen-image),
+[Unsloth announcement](https://x.com/UnslothAI/status/2102431304591761728) +
+[unsloth/Qwen-Image-2.1-GGUF](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF).
 
 ## What nobody else does for the RTX 5070 / 12 GB class
 
