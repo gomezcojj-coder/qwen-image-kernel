@@ -73,14 +73,32 @@ def retrieve_timesteps(scheduler, num_inference_steps: int, device, sigmas=None,
     return scheduler.timesteps, len(scheduler.timesteps)
 
 
-def _fp8_shell_transformer(model: QwenImage21Transformer2DModel, kernel_blocks: bool = True) -> None:
+def _fp8_shell_transformer(model: QwenImage21Transformer2DModel, kernel_blocks: bool = True,
+                           fused_keys: frozenset[str] | None = None) -> None:
     """FP8Linear shells for every linear; optionally swap in fused kernel blocks
     (with the exact block-causal Triton attention). With kernel_blocks=False the
-    stock blocks/processor are kept - the 'FP8 only' ablation config."""
+    stock blocks/processor are kept - the 'FP8 only' ablation config.
+
+    `fused_keys`: safetensors key set of the fp8 cache. When it contains fused
+    qkv / mlp-up entries, the blocks get fused FP8 linears and the individual
+    to_q/k/v, gate_layer/proj linears are dropped (Identity) - the cache holds
+    only the fused weights.
+    """
+    fused = fused_keys is not None and any("fused_qkv.weight" in k for k in fused_keys)
     if kernel_blocks:
+        inner = model.config.num_attention_heads * model.config.attention_head_dim
+        mlp_hidden = inner * getattr(model.config, "mlp_ratio", 3)
         blocks = []
         for blk in model.transformer_blocks:
             kb = QwenImage21KernelBlock(blk)
+            if fused:
+                kb.attn.fused_qkv = FP8Linear(inner, 3 * inner, bias="fused_qkv.bias" in fused_keys)
+                kb.img_mlp.fused_up = FP8Linear(inner, 2 * mlp_hidden, bias="fused_up.bias" in fused_keys)
+                kb.attn.to_q = torch.nn.Identity()
+                kb.attn.to_k = torch.nn.Identity()
+                kb.attn.to_v = torch.nn.Identity()
+                kb.img_mlp.gate_layer = torch.nn.Identity()
+                kb.img_mlp.proj = torch.nn.Identity()
             kb.attn.set_processor(QwenImage21KernelProcessor())
             blocks.append(kb)
         model.transformer_blocks = torch.nn.ModuleList(blocks)
@@ -139,6 +157,19 @@ class KernelRuntime:
     def _fp8_cache_path(self, component: str) -> str:
         return os.path.join(self.cfg.fp8_cache_dir, f"{component}_fp8.safetensors")
 
+    def _transformer_fp8_cache(self) -> tuple[str, bool]:
+        """(path, fused). Prefers the fused-linear cache; falls back to the
+        legacy per-linear cache; builds the fused one if neither exists."""
+        fused_path = os.path.join(self.cfg.fp8_cache_dir, "transformer_fused_fp8.safetensors")
+        legacy_path = self._fp8_cache_path("transformer")
+        if os.path.exists(fused_path):
+            return fused_path, True
+        if os.path.exists(legacy_path):
+            return legacy_path, False
+        from .quantize_offline import build_transformer_fp8_cache
+        build_transformer_fp8_cache(self.cfg.model_id, fused_path)
+        return fused_path, True
+
     # ------------------------------------------------------------------
     # builders
     # ------------------------------------------------------------------
@@ -149,18 +180,19 @@ class KernelRuntime:
         init_kwargs = {k: v for k, v in config.items() if k in params and k != "self"}
 
         if cfg.fp8:
-            cache = self._fp8_cache_path("transformer")
-            if not os.path.exists(cache):
-                from .quantize_offline import build_transformer_fp8_cache
-                build_transformer_fp8_cache(cfg.model_id, cache)
+            cache, fused = self._transformer_fp8_cache()
+
+            from safetensors.torch import load_file
+            from safetensors import safe_open
+            with safe_open(cache, framework="pt") as f:
+                fused_keys = frozenset(f.keys()) if fused else None
+            sd = load_file(cache)
 
             # params on meta, buffers (RoPE tables etc.) created live
             with init_empty_weights(include_buffers=False):
                 model = QwenImage21Transformer2DModel(**init_kwargs)
-            _fp8_shell_transformer(model, kernel_blocks=cfg.kernel_blocks)
+            _fp8_shell_transformer(model, kernel_blocks=cfg.kernel_blocks, fused_keys=fused_keys)
 
-            from safetensors.torch import load_file
-            sd = load_file(cache)
             missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
             assert not unexpected, f"unexpected fp8 cache keys: {unexpected[:4]}"
             assert not missing, f"missing keys after fp8 load: {missing[:8]}"

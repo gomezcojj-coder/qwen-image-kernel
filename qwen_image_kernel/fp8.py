@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import triton
+import triton.language as tl
 
 FP8_E4M3_MAX = 448.0
 
@@ -24,11 +26,31 @@ def compute_scale(x: torch.Tensor) -> torch.Tensor:
     return (x.abs().amax().float() / FP8_E4M3_MAX).clamp_min(1e-12)
 
 
+@triton.jit
+def _scale_cast_fp8_kernel(
+    x_ptr, out_ptr, inv_scale_ptr, N, BLOCK: tl.constexpr,
+):
+    """out = cast_fp8(x * (1/scale)). One pass; the e4m3 range clamp is
+    implicit: |x| <= amax = 448*scale by construction of the scale, and
+    non-finite inputs poison the output either way."""
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    live = offs < N
+    inv = 1.0 / tl.load(inv_scale_ptr)
+    x = tl.load(x_ptr + offs, mask=live, other=0.0)
+    tl.store(out_ptr + offs, (x.to(tl.float32) * inv).to(out_ptr.dtype.element_ty), mask=live)
+
+
 def quantize_tensorwise(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """[M, K] bf16 -> (fp8, scale). One amax reduction + one scale+cast."""
+    """[M, K] bf16 -> (fp8, scale). One amax reduction + one fused scale+cast
+    pass (replaces the separate abs/div/clamp/cast aten chain)."""
     s = compute_scale(x)
-    xq = (x.float() / s).clamp(-FP8_E4M3_MAX, FP8_E4M3_MAX).to(torch.float8_e4m3fn)
-    return xq, s.reshape(1)
+    x2 = x.reshape(-1)
+    xq = torch.empty(x2.shape, device=x.device, dtype=torch.float8_e4m3fn)
+    n = x2.numel()
+    BLOCK = 8192
+    _scale_cast_fp8_kernel[(triton.cdiv(n, BLOCK),)](x2, xq, s, n, BLOCK=BLOCK, num_warps=8)
+    return xq.view(x.shape), s.reshape(1)
 
 
 def quantize_weight_tensorwise(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -62,11 +84,10 @@ class FP8Linear(nn.Module):
             return out.to(x.dtype)
         x2 = x.reshape(-1, x.shape[-1])
         xq, s_a = quantize_tensorwise(x2)
-        out = torch._scaled_mm(xq, self.weight.t(), scale_a=s_a, scale_b=self.weight_scale, out_dtype=torch.bfloat16)
+        out = torch._scaled_mm(xq, self.weight.t(), scale_a=s_a, scale_b=self.weight_scale,
+                               bias=self.bias, out_dtype=torch.bfloat16)
         out = out.reshape(*x.shape[:-1], self.out_features)
-        if self.bias is not None:
-            out = out + self.bias
-        return out.to(x.dtype)
+        return out.to(x.dtype) if out.dtype != x.dtype else out
 
     @staticmethod
     def from_linear(linear: nn.Linear) -> "FP8Linear":

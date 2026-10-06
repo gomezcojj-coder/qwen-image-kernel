@@ -56,6 +56,7 @@ def _qwen21_attn_fwd(
     stride_valid_b,
     HAS_CACHE: tl.constexpr,
     HAS_KEY_VALID: tl.constexpr,
+    UNIFORM_L: tl.constexpr,   # every row attends to the full [0, KV_TOTAL) (decode fast path)
     V_CACHE_FP8: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -73,13 +74,23 @@ def _qwen21_attn_fwd(
     q_ptrs = q_ptr + b * stride_qb + offs_m[:, None] * stride_qs + h * stride_qh + offs_d[None, :]
     q = tl.load(q_ptrs, mask=row_live[:, None], other=0.0)
 
-    # Per-row prefix limits for this tile
-    L = tl.load(L_ptr + offs_m, mask=row_live, other=-1)
-    L_max = tl.max(L, axis=0)
+    # Per-row prefix limits for this tile (skipped on the uniform decode path,
+    # where every row attends to the full [0, KV_TOTAL)).
+    if UNIFORM_L:
+        L_max = KV_TOTAL - 1
+    else:
+        L = tl.load(L_ptr + offs_m, mask=row_live, other=-1)
+        L_max = tl.max(L, axis=0)
 
     m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+
+    # exp2 softmax: exp(x) == exp2(x * log2e); folding log2e into the score
+    # scale lets the epilogue use the single-instruction exp2. The softmax is
+    # base-invariant, so results are identical to the exp form up to fp32
+    # rounding of the scaled scores.
+    qk_scale = sm_scale * 1.4426950408889634
 
     hi_tile = tl.cdiv(L_max + 1, BLOCK_N)
 
@@ -114,7 +125,10 @@ def _qwen21_attn_fwd(
             offs_n_abs = seg_start + offs_n_local
             in_seg = offs_n_local < seg_len
 
-            allowed = in_seg[None, :] & (offs_n_abs[None, :] <= L[:, None])
+            if UNIFORM_L:
+                allowed = in_seg[None, :]
+            else:
+                allowed = in_seg[None, :] & (offs_n_abs[None, :] <= L[:, None])
 
             if HAS_KEY_VALID:
                 kv_valid = tl.load(
@@ -126,14 +140,14 @@ def _qwen21_attn_fwd(
             v_ptrs = v_base + b * vb_ + offs_n_local[:, None] * vs_ + h * vh_ + offs_d[None, :]
 
             k = tl.load(k_ptrs, mask=in_seg[:, None], other=0.0)
-            s = tl.dot(q, tl.trans(k)) * sm_scale  # [BLOCK_M, BLOCK_N] fp32
+            s = tl.dot(q, tl.trans(k)) * qk_scale  # [BLOCK_M, BLOCK_N] fp32, exp2-domain
             s = tl.where(allowed, s, float("-inf"))
 
             m_new = tl.maximum(m_i, tl.max(s, axis=1))
             m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
-            p = tl.exp(s - m_safe[:, None])
+            p = tl.exp2(s - m_safe[:, None])
             p = tl.where(allowed, p, 0.0)
-            alpha = tl.where(m_new == float("-inf"), 0.0, tl.exp(m_i - m_safe))
+            alpha = tl.where(m_new == float("-inf"), 0.0, tl.exp2(m_i - m_safe))
             l_new = l_i * alpha + tl.sum(p, axis=1)
             m_i = m_new
 
@@ -163,6 +177,7 @@ def block_causal_flash_attention(
     cache_k: torch.Tensor | None = None,  # [B, P, H, D]
     cache_v: torch.Tensor | None = None,
     cache_v_scale: torch.Tensor | None = None,  # [B, H] fp32, only with fp8 cache V
+    uniform_full: bool = False,  # caller guarantee: L == KV_TOTAL-1 for every row
 ) -> torch.Tensor:
     """Exact block-causal attention via per-row prefix lengths.
 
@@ -202,6 +217,10 @@ def block_causal_flash_attention(
     else:
         v_scale_arg = query  # dummy pointer, never loaded
 
+    # Uniform decode fast path: caller guarantees every row sees the full
+    # [0, KV_TOTAL) and no per-key validity mask is applied.
+    uniform = uniform_full and key_valid is None
+
     # Shape-dependent configs (swept on sm_120), all within the 101 KB shared
     # memory limit. The fp8 cache-V variant allocates conversion buffers, so it
     # runs one fewer stage.
@@ -230,6 +249,7 @@ def block_causal_flash_attention(
         stride_valid_b,
         HAS_CACHE=P > 0,
         HAS_KEY_VALID=has_valid,
+        UNIFORM_L=uniform,
         V_CACHE_FP8=v_fp8,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,

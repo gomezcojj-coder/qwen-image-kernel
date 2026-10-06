@@ -69,6 +69,9 @@ def rms_rope_kernel(
     tl.store(out_ptr + base + (2 * offs_h + 1)[None, :], o_odd.to(tl.bfloat16), mask=live[:, None])
 
 
+_cos_sin_cache: dict = {}
+
+
 def fused_rms_norm_rope(
     x: torch.Tensor,           # [B, S, H, D] bf16
     weight: torch.Tensor,      # [D] fp32
@@ -76,8 +79,20 @@ def fused_rms_norm_rope(
     eps: float,
 ) -> torch.Tensor:
     B, S, H, D = x.shape
-    cos = freqs_cis.real.float().contiguous()
-    sin = freqs_cis.imag.float().contiguous()
+    # the kernel indexes rows as r*D with no stride args: the input must be
+    # contiguous (fused-QKV splits produce strided q/k views)
+    if not x.is_contiguous():
+        x = x.contiguous()
+    key = (S, D, x.device, freqs_cis.device)
+    cached = _cos_sin_cache.get(key)
+    if cached is None:
+        cos = freqs_cis.real.float().contiguous()
+        sin = freqs_cis.imag.float().contiguous()
+        if len(_cos_sin_cache) > 8:
+            _cos_sin_cache.clear()
+        _cos_sin_cache[key] = (cos, sin)
+    else:
+        cos, sin = cached
     out = torch.empty_like(x)
     nrows = B * S * H
     BLOCK_R = 16
@@ -236,6 +251,11 @@ def swiglu_kernel(
 
 def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     """gate, up: [B, S, M] bf16 -> silu(gate) * up."""
+    # the kernel indexes flat offsets: fused-up GEMM splits are strided views
+    if not gate.is_contiguous():
+        gate = gate.contiguous()
+    if not up.is_contiguous():
+        up = up.contiguous()
     out = torch.empty_like(gate)
     n = gate.numel()
     BLOCK = 4096

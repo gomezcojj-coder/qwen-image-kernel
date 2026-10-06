@@ -18,3 +18,5 @@ site_shot.png
 ref/
 # local debug archive
 _attic/
+
+.triton_cache/

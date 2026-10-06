@@ -64,7 +64,47 @@ def _sd_for_save(model: torch.nn.Module, drop_patterns: tuple[str, ...] = ()) ->
     return sd
 
 
-def build_transformer_fp8_cache(model_id: str, out_path: str) -> None:
+def _fuse_block_linears(block) -> None:
+    """Replace a kernel block's to_q/to_k/to_v and img_mlp gate_layer/proj with
+    single fused FP8 linears, quantized once from the BF16 weights (same
+    one-rounding error class as the individual quantization - no accuracy
+    cost), and drop the individual linears (VRAM-neutral: the fused weight is
+    the concatenation)."""
+    attn, mlp = block.attn, block.img_mlp
+    q, k, v = attn.to_q, attn.to_k, attn.to_v
+    assert q.in_features == k.in_features == v.in_features
+    assert q.out_features == k.out_features == v.out_features
+    assert (q.bias is not None) == (k.bias is not None) == (v.bias is not None)
+    inner = q.out_features
+    fused_qkv = FP8Linear(q.in_features, 3 * inner, bias=q.bias is not None)
+    w = torch.cat([q.weight.data, k.weight.data, v.weight.data], 0)
+    wq, s = _staged_quantize(w)
+    fused_qkv.weight = wq
+    fused_qkv.weight_scale = s
+    if q.bias is not None:
+        fused_qkv.bias = torch.cat([q.bias.data, k.bias.data, v.bias.data], 0).to(torch.bfloat16)
+    attn.fused_qkv = fused_qkv.to(w.device)
+    attn.to_q = torch.nn.Identity()
+    attn.to_k = torch.nn.Identity()
+    attn.to_v = torch.nn.Identity()
+
+    gate, proj = mlp.gate_layer, mlp.proj
+    assert gate.in_features == proj.in_features and gate.out_features == proj.out_features
+    assert (gate.bias is not None) == (proj.bias is not None)
+    hidden = gate.out_features
+    fused_up = FP8Linear(gate.in_features, 2 * hidden, bias=gate.bias is not None)
+    w = torch.cat([gate.weight.data, proj.weight.data], 0)
+    wq, s = _staged_quantize(w)
+    fused_up.weight = wq
+    fused_up.weight_scale = s
+    if gate.bias is not None:
+        fused_up.bias = torch.cat([gate.bias.data, proj.bias.data], 0).to(torch.bfloat16)
+    mlp.fused_up = fused_up.to(w.device)
+    mlp.gate_layer = torch.nn.Identity()
+    mlp.proj = torch.nn.Identity()
+
+
+def build_transformer_fp8_cache(model_id: str, out_path: str, fused_linears: bool = True) -> None:
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21Transformer2DModel
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -77,6 +117,11 @@ def build_transformer_fp8_cache(model_id: str, out_path: str) -> None:
     model.transformer_blocks = torch.nn.ModuleList(
         [QwenImage21KernelBlock(blk) for blk in model.transformer_blocks]
     )
+
+    if fused_linears:
+        print("[fp8-cache] fusing qkv / mlp-up linears (single-rounding) ...", flush=True)
+        for blk in model.transformer_blocks:
+            _fuse_block_linears(blk)
 
     print("[fp8-cache] quantizing block linears to fp8 ...", flush=True)
     _convert_module_fp8(model)

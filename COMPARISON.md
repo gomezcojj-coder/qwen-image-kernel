@@ -7,7 +7,7 @@ number is vendor- or community-reported we say so.
 
 | runtime | target hardware | Qwen-Image-2.1 support | published timing (1024px, 40 steps) | VRAM | notes |
 |---|---|---|---|---|---|
-| **this project** | RTX 5070 12 GB, Windows | t2i + edits | **43.8 s** t2i / **35.3 s** edit-768 | **7.6 GiB peak** | 29.8 dB / 36.5 dB vs BF16, bit-exact determinism |
+| **this project** | RTX 5070 12 GB, Windows | t2i + edits | **35.4 s** t2i / **28.1 s** edit-768 | **7.4-8.9 GiB peak** | 29.2 dB avg / 36.1 dB edit vs BF16, bit-exact determinism |
 | LightX2V | RTX 5090 32 GB (consumer) | FP8 DiT + TE offload | **5.93 s** t2i / 7.14 s edit | ~16 GiB | SageAttention 2/3 + INT8/FP8 weight quants; only published consumer timing |
 | **Unsloth GGUF** | 12 GB+ consumer | t2i + edits (guide) | none published | 12 GiB tier (Dynamic GGUF); FP8 on 6 GiB via offload | Dynamic GGUFs (important layers upcast); ComfyUI workflow; entered Sep 22 |
 | ComfyUI + Comfy-Org INT8 | 24-32 GB | INT8 repackage (16.1 GiB total) | ~6.7 s (NVFP4, 5090, community) | 16.1 GiB | NVFP4 package at 10.4 GiB "reaches 16 GB cards" |
@@ -34,11 +34,12 @@ community has published **no 12 GB timing for Qwen-Image-2.1 at all**.
 
 This runtime fills that slot specifically:
 
-* **7.6 GiB peak at 1024px**, the lowest published footprint for this model on any
-  hardware, achieved with FP8 W8A8 weights rather than low-bit GGUF. On a 12 GB card
-  that leaves real headroom for a desktop, 1024² references, and RGBA editing.
+* **7.4-8.9 GiB peak at 1024px** (prompt-length dependent), the lowest published
+  footprint for this model on any hardware, achieved with FP8 W8A8 weights rather
+  than low-bit GGUF. On a 12 GB card that leaves real headroom for a desktop,
+  1024² references, and RGBA editing.
 * **FP8 accuracy, not GGUF accuracy**: FP8 E4M3 with per-tensor dynamic activation
-  scales measures 29.8 dB (t2i) / 36.5 dB (edit) against the BF16 pipeline. The GGUF
+  scales averages 29.2 dB (t2i) / 36.1 dB (edit) against the BF16 pipeline. The GGUF
   12 GB path (Q3/Q4 of a 7B DiT) has no published accuracy number and the ComfyUI
   loader docs themselves warn of visible degradation at Q4 and below.
 * **Exact block-causal attention without torch.compile**: the stock fast path needs
@@ -82,14 +83,14 @@ this repo went up. That validates the niche and changes the positioning honestly
   this runtime is the scripted/programmatic FP8-accuracy path.
 
 On a same-dollar basis the comparison is not close in our favor, but on the
-"runs at all, on Windows, at FP8 accuracy, in 7.6 GiB" axis we are alone.
+"runs at all, on Windows, at FP8 accuracy, in under 9 GiB" axis we are alone.
 
 ## What we measured vs what others claim
 
 | claim type | vLLM-Omni | SGLang | LightX2V | ComfyUI quants | this project |
 |---|---|---|---|---|---|
 | measured on consumer 12 GB | no | no | no | no | **yes** |
-| publishes accuracy vs BF16 (dB) | yes (26.1-29.7) | no | no | no | **yes (29.8 / 36.5)** |
+| publishes accuracy vs BF16 (dB) | yes (26.1-29.7) | no | no | no | **yes (29.2 / 36.1)** |
 | exact-attention unit tests | no | no | no | no | **yes** |
 | runs on Windows | no | untested | partial (community wheels) | yes | **yes** |
 | needs torch.compile | no | no | no | no | **no** |
@@ -106,13 +107,13 @@ On a same-dollar basis the comparison is not close in our favor, but on the
   NVFP4 package for Blackwell (6.7 s on a 5090, community numbers) (community numbers).
 * **GGUF quants** reach smaller cards (Q4 at 6-8 GB), at lower quality. For 12 GB
   cards running Qwen-Image-2.1, the choice is Q4-class GGUF (quality cost, no
-  published accuracy) vs this runtime's FP8 (29.8 dB measured, 7.6 GiB peak).
+  published accuracy) vs this runtime's FP8 (29.2 dB measured, under 9 GiB peak).
 
 ## Bottom line
 
 For a 12 GB Blackwell card on Windows, this runtime is currently the only documented
 way to run Qwen-Image-2.1 at FP8 quantization accuracy (no 3/4-bit GGUF degradation),
 with the lowest VRAM footprint of any published setup, at speeds that scale with
-resolution (9.7x stock at 512px, 5.0x at 1024px) and 4.6x on edits. The 24 GB+ crowd
+resolution (21.8x stock at 512px, 6.2x at 1024px) and 5.8x on edits. The 24 GB+ crowd
 is better served by LightX2V or ComfyUI-NVFP4 today; the datacenter crowd by
 vLLM-Omni.

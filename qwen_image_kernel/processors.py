@@ -61,11 +61,18 @@ class QwenImage21KernelProcessor:
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
         H = attn.heads
-        D = attn.to_q.out_features // H
-
-        query = attn.to_q(hidden_states).unflatten(-1, (H, D))
-        key = attn.to_k(hidden_states).unflatten(-1, (H, D))
-        value = attn.to_v(hidden_states).unflatten(-1, (H, D))
+        fused_qkv = getattr(attn, "fused_qkv", None)
+        if fused_qkv is not None:
+            # single quant + single GEMM for Q, K, V (same math per output
+            # column; the activation is quantized once instead of 3x)
+            D = fused_qkv.out_features // (3 * H)
+            qkv = fused_qkv(hidden_states)
+            query, key, value = qkv.unflatten(-1, (3 * H, D)).chunk(3, dim=-2)
+        else:
+            D = attn.to_q.out_features // H
+            query = attn.to_q(hidden_states).unflatten(-1, (H, D))
+            key = attn.to_k(hidden_states).unflatten(-1, (H, D))
+            value = attn.to_v(hidden_states).unflatten(-1, (H, D))
 
         # Fused QK-RMSNorm + RoPE (stock: RMSNorm -> bf16 -> complex RoPE)
         query = fused_rms_norm_rope(query, attn.norm_q.weight, rotary_emb, attn.norm_q.eps)
@@ -101,6 +108,7 @@ class QwenImage21KernelProcessor:
                 out = block_causal_flash_attention(
                     query, key, value, L, kv_mask, cache_k=cache_k, cache_v=cache_v,
                     cache_v_scale=v_scale,
+                    uniform_full=kv_mask is None,
                 )
             else:
                 # no cache: full attention over the whole sequence
@@ -108,7 +116,10 @@ class QwenImage21KernelProcessor:
                 kv_mask = attention_mask
                 if kv_mask is not None:
                     kv_mask = kv_mask.reshape(kv_mask.shape[0], -1)
-                out = block_causal_flash_attention(query, key, value, L, kv_mask)
+                out = block_causal_flash_attention(
+                    query, key, value, L, kv_mask,
+                    uniform_full=kv_mask is None,
+                )
 
         out = out.flatten(2, 3).type_as(query)
         out = attn.to_out[0](out)
@@ -145,7 +156,8 @@ class QwenImage21KernelBlock(torch.nn.Module):
         key_valid=None,
     ) -> torch.Tensor:
         mod_stride = modulation.stride(0)
-        inner = self.attn.to_q.out_features
+        fused_qkv = getattr(self.attn, "fused_qkv", None)
+        inner = fused_qkv.out_features // 3 if fused_qkv is not None else self.attn.to_q.out_features
         # mod1.scale @ +0, mod1.gate @ +inner, mod2.scale @ +2*inner, mod2.gate @ +3*inner
         img_mod = fused_layer_norm_modulate(
             hidden_states, modulation, 0, mod_stride, target_token_mask, self._eps
@@ -165,8 +177,12 @@ class QwenImage21KernelBlock(torch.nn.Module):
         img_mod2 = fused_layer_norm_modulate(
             hidden_states, modulation, 2 * inner, mod_stride, target_token_mask, self._eps
         )
-        gate = self.img_mlp.gate_layer(img_mod2)
-        up = self.img_mlp.proj(img_mod2)
+        fused_up = getattr(self.img_mlp, "fused_up", None)
+        if fused_up is not None:
+            gate, up = fused_up(img_mod2).chunk(2, dim=-1)
+        else:
+            gate = self.img_mlp.gate_layer(img_mod2)
+            up = self.img_mlp.proj(img_mod2)
         mlp_mid = fused_swiglu(gate, up)
         mlp_out = self.img_mlp.out(mlp_mid)
         hidden_states = fused_gate_residual(hidden_states, mlp_out, modulation, 3 * inner, target_token_mask)
