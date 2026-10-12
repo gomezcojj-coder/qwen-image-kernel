@@ -5,12 +5,13 @@
 # separate per-layer tensors *after* the text-encoder's 8.75 GB alloc/free
 # cycle, it lands in a fragmented VRAM pool; under Windows WDDM the attention
 # kernel then reads it at a fraction of normal bandwidth (observed 6.5x step
-# slowdown). Allocating the whole cache as ONE slab up front - before the big
-# model weights - guarantees a contiguous, TLB-friendly working set.
+# slowdown). Allocating the whole cache as ONE slab up front - sized to the
+# free VRAM - guarantees a contiguous, TLB-friendly working set.
 #
 # Optional: store V in fp8e4m3 with per-head scales (K stays bf16 - post-RoPE
-# keys are more sensitive). Halves V bandwidth and shrinks the slab; measured
-# by the vLLM recipe at ~41 dB vs BF16 caches (V-only).
+# keys are more sensitive). Per prefix token across 32 layers: K+V bf16 =
+# 512 KB, K bf16 + V fp8 = 384 KB. The vLLM recipe measured ~41 dB vs BF16
+# caches (V-only).
 
 from __future__ import annotations
 
@@ -47,10 +48,7 @@ class _LayerView:
         """Returns (k, v) as [B, P, H, D] views (strided; kernel is stride-agnostic)."""
         P = int(self._c.lengths[self._layer])
         k = self._c.k_buf[self._layer, :, :, :P, :].transpose(1, 2)
-        if self._c.v_fp8:
-            v = self._c.v_buf[self._layer, :, :, :P, :].transpose(1, 2)
-        else:
-            v = self._c.v_buf[self._layer, :, :, :P, :].transpose(1, 2)
+        v = self._c.v_buf[self._layer, :, :, :P, :].transpose(1, 2)
         return k, v
 
     def views(self):
@@ -66,7 +64,8 @@ class ContiguousKVCache:
     """Single-slab prefix KV cache: one allocation for all layers.
 
     K layout: [L, B, H, P_max, D] bf16. V layout: same (bf16) or fp8e4m3 with
-    per-head fp32 scales [L, B, H].
+    per-head fp32 scales [L, B, H]. Per prefix token across 32 layers:
+    K+V bf16 = 512 KB, K bf16 + V fp8 = 384 KB.
     """
 
     def __init__(

@@ -395,6 +395,34 @@ class KernelRuntime:
     # ------------------------------------------------------------------
     # phase 2 + 3: denoise + decode
     # ------------------------------------------------------------------
+    def _auto_ref_area(self, n_refs: int, output_resolution: int) -> int:
+        """Pick the per-image reference budget from measured free VRAM.
+
+        Costs per latent token across 32 layers: K bf16 + V fp8 = 384 KB (kernel
+        path) or 512 KB (stock path). Reserves cover the fp8 DiT (~7.15 GiB,
+        read from the cache file when present), activations (peak ~0.15 GiB at
+        1024px, scaling with area) and embeddings, plus a safety margin.
+        Falls back to the smallest budget if nothing fits, in which case the
+        edit runs with a modest WDDM shared-memory spill.
+        """
+        per_token_b = (384 if (self.cfg.kernel_blocks and self.cfg.kv_v_fp8) else 512) * 1024
+        dit_gib = 7.15
+        try:
+            cache_file = os.path.join(self.cfg.fp8_cache_dir, "transformer_fp8.safetensors")
+            if os.path.exists(cache_file):
+                dit_gib = os.path.getsize(cache_file) / 2**30 + 0.03
+        except OSError:
+            pass
+        if torch.cuda.is_available():
+            free_b, _total_b = torch.cuda.mem_get_info()
+            act_reserve = 0.1 + 0.2 * (output_resolution / 1024) ** 2
+            avail_gib = free_b / 2**30 - dit_gib - act_reserve - 0.1 - 0.2
+            tokens_allowed = max(0, int(avail_gib * 2**30)) // per_token_b // n_refs
+            for b in (768, 640, 512, 448, 384, 320):
+                if (b // 16) ** 2 <= tokens_allowed:
+                    return b * b
+        return 320 ** 2  # smallest; runs with a modest spill on 8 GB cards
+
     @torch.no_grad()
     def generate(
         self,
@@ -417,9 +445,9 @@ class KernelRuntime:
         `output_resolution^2` pixels.
 
         Reference images are resized so their area matches a per-image budget
-        that keeps the prefix KV cache within 12 GB VRAM: 1024^2 for one
-        image, 768^2 for two, 512^2 for three or more (override with
-        `ref_resolution`).
+        derived from free VRAM (the KV slab costs 384 KB per latent token with
+        the fp8-V cache; the DiT needs ~7.15 GiB), floor 320px. Override with
+        `ref_resolution`.
         """
         self._ensure_static()
         # ---- normalize condition images --------------------------------
@@ -446,12 +474,10 @@ class KernelRuntime:
 
         n_refs = len(condition_images)
         if condition_images:
-            ref_area = (self.cfg.ref_resolution or output_resolution) ** 2
-            if self.cfg.ref_resolution is None:
-                # auto: keep the prefix KV cache and working set inside the
-                # 12 GB budget (each 16px latent token costs ~512 KB of
-                # bf16 prefix cache across 32 layers)
-                ref_area = {1: 768, 2: 640}.get(min(n_refs, 3), 512) ** 2
+            if self.cfg.ref_resolution is not None:
+                ref_area = self.cfg.ref_resolution ** 2
+            else:
+                ref_area = self._auto_ref_area(n_refs, output_resolution)
             input_image_sizes = []
             input_images, vae_images = [], []
             for img in condition_images:
