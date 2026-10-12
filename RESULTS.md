@@ -75,3 +75,25 @@ output too, i.e. equidistant from both references).
 |---|---|---|---|
 | recolor, 768 ref | 28.1 s (0.52 s/step) | 163.2 s | **36.08 dB** |
 | recolor, 1024 ref | 83.6 s (1.16 s/step) | 223.4 s | **29.78 dB** |
+
+## Ada (sm_89) results: RTX 4060 8 GB
+
+The same code runs unmodified on Ada. FP8 tensorwise works (rowwise does not,
+same as sm_120); all kernel tests pass on sm_89 (attention exact vs stock SDPA,
+K/V slab, fused kernels, FP8 linears, full block); Triton compiles with the same
+tile configs. Timings below are cold-process (fresh CLI run each time, including
+model load + Triton JIT; a resident session is faster):
+
+| run | RTX 4060 8 GB | note |
+|---|---|---|
+| t2i 768px | 62.8 s | fits resident |
+| t2i 1024px | 92.1 s | fits resident (7.8 GiB peak) |
+| edit, 640px ref | 90.7 s | VRAM-aware budget picks 640 |
+| edit, 768px ref | spills into WDDM shared memory (~6x slowdown) | use the auto budget |
+
+On 8 GB the reference budget is the binding constraint: the VRAM-aware picker
+largest-fits the slab (K bf16 + V fp8 = 384 KB per latent token) and lands at a
+640px reference on this card. 1024px references are t2i-only here. Kernel
+outputs are bit-exact per GPU but diverge across GPUs (sm_89 vs sm_120 rounding
+paths amplify through the 40-step sampler), so cross-GPU PSNR is not a
+meaningful metric; quality and prompt adherence are equivalent.

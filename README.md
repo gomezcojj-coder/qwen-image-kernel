@@ -1,4 +1,4 @@
-# Qwen-Image-2.1 Kernel Runtime
+﻿# Qwen-Image-2.1 Kernel Runtime
 
 I wanted to run [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1)
 on my own 12 GB card, and none of the published paths fit: BF16 needs ~34 GB,
