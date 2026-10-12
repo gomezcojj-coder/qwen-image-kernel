@@ -20,3 +20,5 @@ ref/
 _attic/
 
 .triton_cache/
+
+.tcache/

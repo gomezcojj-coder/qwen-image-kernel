@@ -3,6 +3,10 @@ import sys
 
 import torch
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from qwen_image_kernel.fp8 import FP8Linear
 
 torch.manual_seed(0)

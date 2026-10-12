@@ -4,6 +4,10 @@ import sys
 
 import torch
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from diffusers.models.transformers.transformer_qwenimage21 import (
     QwenImage21KVCache,
     QwenImage21TransformerBlock,

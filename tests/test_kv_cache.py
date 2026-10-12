@@ -3,6 +3,10 @@ import sys
 
 import torch
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from qwen_image_kernel.kv_cache import ContiguousKVCache
 from qwen_image_kernel.triton_attention import block_causal_flash_attention, reference_block_causal_attention
 
