@@ -398,26 +398,24 @@ class KernelRuntime:
     def _auto_ref_area(self, n_refs: int, output_resolution: int) -> int:
         """Pick the per-image reference budget from measured free VRAM.
 
-        Costs per latent token across 32 layers: K bf16 + V fp8 = 384 KB (kernel
-        path) or 512 KB (stock path). Reserves cover the fp8 DiT (~7.15 GiB,
-        read from the cache file when present), activations (peak ~0.15 GiB at
-        1024px, scaling with area) and embeddings, plus a safety margin.
-        Falls back to the smallest budget if nothing fits, in which case the
-        edit runs with a modest WDDM shared-memory spill.
+        The slab costs per latent token across 32 layers: K bf16 + V fp8 =
+        384 KB (kernel path) or 512 KB (stock path). The reserve covers
+        activations and embeds; the constant is calibrated on an 8 GB 4060
+        where the cliff sits between a 640px reference (fits, full speed) and
+        a 768px one (spills into WDDM shared memory, ~6x slowdown).
         """
         per_token_b = (384 if (self.cfg.kernel_blocks and self.cfg.kv_v_fp8) else 512) * 1024
-        dit_gib = 7.15
+        dit_gib = 7.21  # fp8 DiT + margin, GiB
         try:
             cache_file = os.path.join(self.cfg.fp8_cache_dir, "transformer_fp8.safetensors")
             if os.path.exists(cache_file):
-                dit_gib = os.path.getsize(cache_file) / 2**30 + 0.03
+                dit_gib = os.path.getsize(cache_file) / 2**30 + 0.1
         except OSError:
             pass
         if torch.cuda.is_available():
             free_b, _total_b = torch.cuda.mem_get_info()
-            act_reserve = 0.1 + 0.2 * (output_resolution / 1024) ** 2
-            avail_gib = free_b / 2**30 - dit_gib - act_reserve - 0.1 - 0.2
-            tokens_allowed = max(0, int(avail_gib * 2**30)) // per_token_b // n_refs
+            allowed_gib = free_b / 2**30 - dit_gib - 0.15  # activations + embeds + margin
+            tokens_allowed = max(0, int(allowed_gib * 2**30)) // per_token_b // n_refs
             for b in (768, 640, 512, 448, 384, 320):
                 if (b // 16) ** 2 <= tokens_allowed:
                     return b * b
